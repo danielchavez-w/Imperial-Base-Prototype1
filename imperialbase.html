@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Imperial Base Run</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Arial', sans-serif; user-select: none; }
+        
+        /* UI LAYOUT - Sci-Fi Style */
+        #game-ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
+        
+        /* BOTTOM LEFT: Health/Shields */
+        #hud-left { 
+            position: absolute; bottom: 30px; left: 30px; width: 250px; 
+            transform: skewX(-15deg); /* Sci-fi slant */
+        }
+        .bar-label { color: #0ff; font-size: 12px; font-weight: bold; margin-bottom: 2px; text-shadow: 0 0 5px #0ff; }
+        .bar-container { 
+            background: rgba(0, 20, 40, 0.8); 
+            border: 1px solid #0ff; 
+            height: 12px; 
+            margin-bottom: 8px; 
+            position: relative; 
+            padding: 2px;
+        }
+        .bar { height: 100%; transition: width 0.2s; box-shadow: 0 0 8px currentColor; }
+        #health-bar { background-color: #f00; width: 100%; color: #f00; }
+        #armor-bar { background-color: #0ff; width: 100%; color: #0ff; }
+
+        /* BOTTOM RIGHT: Ammo */
+        #hud-right { 
+            position: absolute; bottom: 30px; right: 30px; text-align: right; 
+            transform: skewX(-15deg);
+        }
+        #weapon-name { 
+            font-size: 16px; color: #ff0; font-weight: bold; margin-bottom: 5px; letter-spacing: 2px; 
+            text-transform: uppercase; text-shadow: 0 0 5px #ff0;
+        }
+        #ammo-display { 
+            color: #f00; font-size: 48px; font-weight: bold; line-height: 1; 
+            text-shadow: 0 0 10px #f00; font-family: 'Impact', sans-serif; letter-spacing: 2px; 
+        }
+        #ammo-reserve { font-size: 24px; color: #a00; }
+
+        /* CENTER: Crosshair */
+        #crosshair { 
+            position: absolute; top: 50%; left: 50%; 
+            width: 30px; height: 30px; 
+            transform: translate(-50%, -50%);
+        }
+        /* Reticle design */
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: rgba(255, 0, 0, 0.8);
+        }
+        #crosshair::before { top: 14px; left: 0; width: 30px; height: 2px; }
+        #crosshair::after { top: 0; left: 14px; width: 2px; height: 30px; }
+        
+        #crosshair-dot {
+            position: absolute; top: 50%; left: 50%; width: 4px; height: 4px; 
+            background: #f00; transform: translate(-50%, -50%); border-radius: 50%;
+            box-shadow: 0 0 5px #f00;
+        }
+
+        /* START / PAUSE */
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            color: #fff; z-index: 10;
+            background-image: radial-gradient(circle at center, #111 0%, #000 100%);
+        }
+        h1 { 
+            font-family: 'Impact', sans-serif; font-size: 72px; letter-spacing: 6px; 
+            color: #ffe81f; text-shadow: 0 0 10px #b8860b; /* Star Wars Yellow */
+            margin: 0; text-transform: uppercase;
+        }
+        .blink { animation: blink 1s infinite; color: #0ff; font-family: monospace; letter-spacing: 2px; }
+        @keyframes blink { 50% { opacity: 0.3; } }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <div id="game-ui">
+        <div id="hud-left">
+            <div class="bar-label">VITALITY</div>
+            <div class="bar-container"><div id="health-bar" class="bar"></div></div>
+            <div class="bar-label">SHIELDS</div>
+            <div class="bar-container"><div id="armor-bar" class="bar"></div></div>
+        </div>
+        <div id="hud-right">
+            <div id="weapon-name">E-11 BLASTER</div>
+            <div id="ammo-display">20<span id="ammo-reserve">/∞</span></div>
+        </div>
+        <div id="crosshair"><div id="crosshair-dot"></div></div>
+    </div>
+
+    <div id="overlay">
+        <h1>IMPERIAL BASE</h1>
+        <p class="blink" id="status-text">CLICK TO INITIALIZE</p>
+        <p style="font-size: 14px; margin-top: 20px; color: #888;">WASD: Move | MOUSE: Look | CLICK: Fire | R: Reload</p>
+    </div>
+
+    <script>
+        // --- 1. CONFIGURATION ---
+        const PLAYER_HEIGHT = 1.7;
+        const PLAYER_SPEED = 9.0;
+        const PLAYER_RADIUS = 0.5; 
+        const MOUSE_SENSITIVITY = 0.002;
+        
+        // --- 2. STATE ---
+        let camera, scene, renderer;
+        let controlsLocked = false;
+        let moveState = { fwd: false, bwd: false, left: false, right: false };
+        let prevTime = performance.now();
+        
+        // Physics Objects
+        const worldColliders = []; 
+        const lasers = []; // Array to store active projectiles
+
+        // Weapon State
+        const weapon = {
+            obj: null,
+            ammo: 20, maxAmmo: 20,
+            recoil: 0,
+            reloading: false,
+            lastShot: 0
+        };
+        
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        // --- 3. INIT ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000); // Pure black for space
+            // FOG: Modified to start closer but allow stars (fog:false on stars) to shine
+            scene.fog = new THREE.Fog(0x050505, 15, 60); 
+
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 1000);
+            camera.rotation.order = 'YXZ'; // Essential for proper FPS look
+            scene.add(camera);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+            document.body.appendChild(renderer.domElement);
+
+            // Lighting: Ambient + Gun Light handles most, Point lights in rooms add atmosphere
+            scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+            
+            createStarfield();
+            createWeapon();
+            buildWorld();
+            setupInputs();
+
+            requestAnimationFrame(animate);
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        function createStarfield() {
+            // Bright stars
+            const geoBright = new THREE.BufferGeometry();
+            const posBright = [];
+            for(let i=0; i<800; i++) {
+                const r = 400; // Distance
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                posBright.push(
+                    r * Math.sin(phi) * Math.cos(theta),
+                    r * Math.sin(phi) * Math.sin(theta),
+                    r * Math.cos(phi)
+                );
+            }
+            geoBright.setAttribute('position', new THREE.Float32BufferAttribute(posBright, 3));
+            
+            // fog: false is CRITICAL for stars to be seen through windows at distance
+            const matBright = new THREE.PointsMaterial({
+                color: 0xffffff, 
+                size: 2.5, 
+                sizeAttenuation: true,
+                fog: false 
+            });
+            scene.add(new THREE.Points(geoBright, matBright));
+
+            // Dim stars
+            const geoDim = new THREE.BufferGeometry();
+            const posDim = [];
+            for(let i=0; i<3000; i++) {
+                const r = 450;
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                posDim.push(
+                    r * Math.sin(phi) * Math.cos(theta),
+                    r * Math.sin(phi) * Math.sin(theta),
+                    r * Math.cos(phi)
+                );
+            }
+            geoDim.setAttribute('position', new THREE.Float32BufferAttribute(posDim, 3));
+            const matDim = new THREE.PointsMaterial({
+                color: 0x8888aa, 
+                size: 1.2, 
+                sizeAttenuation: true,
+                fog: false
+            });
+            scene.add(new THREE.Points(geoDim, matDim));
+        }
+
+        // --- 4. WORLD GENERATION ---
+        function buildWorld() {
+            // -- Procedural Textures --
+            
+            // 1. Glossy Black Floor - MODIFIED: Reduced brightness/reflection
+            const cvsFloor = document.createElement('canvas');
+            cvsFloor.width = 128; cvsFloor.height = 128;
+            const ctxF = cvsFloor.getContext('2d');
+            ctxF.fillStyle = '#111'; ctxF.fillRect(0,0,128,128);
+            ctxF.strokeStyle = '#222'; ctxF.lineWidth = 1; ctxF.strokeRect(0,0,128,128); // Darker stroke
+            const texFloor = new THREE.CanvasTexture(cvsFloor);
+            texFloor.wrapS = THREE.RepeatWrapping; texFloor.wrapT = THREE.RepeatWrapping;
+
+            // 2. Imperial Wall (DARKER GREY) - MODIFIED: More Details
+            const cvsWall = document.createElement('canvas');
+            cvsWall.width = 64; cvsWall.height = 64;
+            const ctxW = cvsWall.getContext('2d');
+            // Background - Dark Grey
+            ctxW.fillStyle = '#444'; ctxW.fillRect(0,0,64,64); 
+            // Tech Lines
+            ctxW.fillStyle = '#333'; 
+            ctxW.fillRect(60, 0, 4, 64); // Vertical seam
+            ctxW.fillRect(0, 50, 64, 2); // Horizontal seam
+            // Random Noise/Dirt
+            for(let i=0; i<50; i++) {
+                ctxW.fillStyle = Math.random() > 0.5 ? '#4a4a4a' : '#3d3d3d';
+                ctxW.fillRect(Math.random()*64, Math.random()*64, 2, 2);
+            }
+            // Small vent details
+            ctxW.fillStyle = '#222'; 
+            ctxW.fillRect(5, 5, 10, 2);
+            ctxW.fillRect(5, 9, 10, 2);
+            ctxW.fillRect(5, 13, 10, 2);
+
+            const texWall = new THREE.CanvasTexture(cvsWall);
+            texWall.wrapS = THREE.RepeatWrapping; texWall.wrapT = THREE.RepeatWrapping;
+            texWall.magFilter = THREE.NearestFilter;
+
+            // 3. Dark Wall (Corridors)
+            const cvsDark = document.createElement('canvas');
+            cvsDark.width = 64; cvsDark.height = 64;
+            const ctxD = cvsDark.getContext('2d');
+            ctxD.fillStyle = '#222'; ctxD.fillRect(0,0,64,64);
+            ctxD.fillStyle = '#444'; ctxD.fillRect(0,30,64,4); // Stripe
+            const texDark = new THREE.CanvasTexture(cvsDark);
+            texDark.wrapS = THREE.RepeatWrapping; texDark.wrapT = THREE.RepeatWrapping;
+            texDark.magFilter = THREE.NearestFilter;
+
+            // Materials - MODIFIED FLOOR PROPERTIES
+            const matFloor = new THREE.MeshStandardMaterial({ 
+                map: texFloor, 
+                roughness: 0.6, // Increased from 0.2 (Less glossy)
+                metalness: 0.1  // Reduced from 0.5 (Less reflective)
+            });
+            const matWallImp = new THREE.MeshStandardMaterial({ map: texWall, roughness: 0.4 });
+            const matWallDark = new THREE.MeshStandardMaterial({ map: texDark, roughness: 0.5 });
+            const matCeil = new THREE.MeshStandardMaterial({ color: 0x111111 });
+            const matLight = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const matGlass = new THREE.MeshPhysicalMaterial({ 
+                color: 0x88ccff, 
+                metalness: 0.1, 
+                roughness: 0.0, 
+                transparent: true, 
+                opacity: 0.15,
+                transmission: 0.95,
+                side: THREE.DoubleSide
+            });
+            
+            // Materials for Control Panels
+            const matPanelBase = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.3 });
+            const matBtnRed = new THREE.MeshBasicMaterial({ color: 0xff3333 });
+            const matBtnGreen = new THREE.MeshBasicMaterial({ color: 0x33ff33 });
+            const matBtnBlue = new THREE.MeshBasicMaterial({ color: 0x3333ff });
+
+            // -- Helper: Create Control Panel --
+            const createControlPanel = () => {
+                const group = new THREE.Group();
+                // Base plate
+                const base = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.1), matPanelBase);
+                group.add(base);
+                
+                // Buttons
+                const btn1 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.05), matBtnRed);
+                btn1.position.set(-0.15, 0.15, 0.05);
+                group.add(btn1);
+                
+                const btn2 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.05), matBtnGreen);
+                btn2.position.set(0.15, 0.15, 0.05);
+                group.add(btn2);
+                
+                const screen = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.02), matBtnBlue);
+                screen.position.set(0, -0.1, 0.05);
+                group.add(screen);
+
+                // Small light
+                const pl = new THREE.PointLight(0x00aaff, 0.3, 3);
+                pl.position.set(0, 0, 0.2);
+                group.add(pl);
+
+                return group;
+            };
+
+            // -- Builder --
+            const addBlock = (x, y, z, w, h, d, mat) => {
+                const geo = new THREE.BoxGeometry(w, h, d);
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.set(x, y, z);
+                scene.add(mesh);
+                const box = new THREE.Box3().setFromObject(mesh);
+                worldColliders.push(box);
+                return mesh;
+            };
+
+            const addRoom = (cx, cz, w, d, h, openings=[], windows=[], wallMat=matWallImp, floorMat=matFloor) => {
+                // Floor
+                const fGeo = new THREE.PlaneGeometry(w, d);
+                const uvs = fGeo.attributes.uv;
+                for(let i=0; i<uvs.count; i++) uvs.setXY(i, uvs.getX(i)*w/2, uvs.getY(i)*d/2);
+                const floor = new THREE.Mesh(fGeo, floorMat);
+                floor.rotation.x = -Math.PI/2;
+                floor.position.set(cx, 0, cz);
+                scene.add(floor);
+
+                // Ceiling
+                const ceil = new THREE.Mesh(new THREE.PlaneGeometry(w, d), matCeil);
+                ceil.rotation.x = Math.PI/2;
+                ceil.position.set(cx, h, cz);
+                scene.add(ceil);
+
+                // Walls
+                const halfW = w/2; const halfD = d/2;
+
+                const makeWall = (px, pz, rw, rd, sideType, facingDir) => { 
+                    // facingDir: 'N', 'S', 'E', 'W' (Which way the INNER wall faces)
+                    
+                    if (sideType === 'door') {
+                        const dw = 3.5; const dh = 3.2;
+                        const isVert = rw < rd;
+                        if (isVert) { 
+                            const seg = (rd - dw) / 2;
+                            addBlock(px, h/2, pz-dw/2-seg/2, rw, h, seg, wallMat);
+                            addBlock(px, h/2, pz+dw/2+seg/2, rw, h, seg, wallMat);
+                            addBlock(px, h-(h-dh)/2, pz, rw, h-dh, dw, wallMat);
+                        } else {
+                            const seg = (rw - dw) / 2;
+                            addBlock(px-dw/2-seg/2, h/2, pz, seg, h, rd, wallMat);
+                            addBlock(px+dw/2+seg/2, h/2, pz, seg, h, rd, wallMat);
+                            addBlock(px, h-(h-dh)/2, pz, dw, h-dh, rd, wallMat);
+                        }
+
+                        // Floor Patch
+                        const patchW = isVert ? rw : dw;
+                        const patchD = isVert ? dw : rd;
+                        const patchGeo = new THREE.PlaneGeometry(patchW, patchD);
+                        const puv = patchGeo.attributes.uv;
+                        for(let i=0; i<puv.count; i++) puv.setXY(i, puv.getX(i)*patchW/2, puv.getY(i)*patchD/2);
+                        const patch = new THREE.Mesh(patchGeo, floorMat);
+                        patch.rotation.x = -Math.PI / 2;
+                        patch.position.set(px, 0, pz);
+                        scene.add(patch);
+                    } 
+                    else if (sideType === 'window') {
+                        const winH = h * 0.5;
+                        const winY = h * 0.5;
+                        const isVert = rw < rd;
+                        
+                        addBlock(px, h - (h - winH)/2/2, pz, rw, (h - winH)/2, rd, wallMat); 
+                        addBlock(px, (h - winH)/4, pz, rw, (h - winH)/2, rd, wallMat);
+                        
+                        const glassGeo = new THREE.BoxGeometry(isVert?0.2:rw-0.5, winH, isVert?rd-0.5:0.2);
+                        const glass = new THREE.Mesh(glassGeo, matGlass);
+                        glass.position.set(px, winY, pz);
+                        scene.add(glass);
+                        worldColliders.push(new THREE.Box3().setFromObject(glass));
+                    }
+                    else {
+                        // Solid Wall
+                        addBlock(px, h/2, pz, rw, h, rd, wallMat);
+
+                        // Randomly add a control panel
+                        if (Math.random() > 0.6) {
+                            const panel = createControlPanel();
+                            // Position logic based on facingDir
+                            // Panels are 0.1 thick. Wall thickness is rw or rd.
+                            // We want to place it on the INNER surface.
+                            
+                            const offset = 0.6; // Slightly more than wall half-thickness (thickness is 2.0 -> half is 1.0?? Wait wall thickness passed is 2)
+                            // Passed rw/rd. One is length, one is thickness(2).
+                            // If isVert (Wall along Z), thickness is rw=2.
+                            
+                            if (facingDir === 'N') { // Inner face looking North (Wall is South)
+                                panel.position.set(px + (Math.random()*4-2), 1.5, pz - 1.05); // Wall is at pz. Thickness 2. Inner face at pz-1
+                                // Facing North means rotation Y = PI
+                                panel.rotation.y = Math.PI; 
+                            }
+                            else if (facingDir === 'S') { // Inner face looking South (Wall is North)
+                                panel.position.set(px + (Math.random()*4-2), 1.5, pz + 1.05);
+                                panel.rotation.y = 0;
+                            }
+                            else if (facingDir === 'E') { // Inner face looking East (Wall is West)
+                                panel.position.set(px + 1.05, 1.5, pz + (Math.random()*4-2));
+                                panel.rotation.y = Math.PI/2;
+                            }
+                            else if (facingDir === 'W') { // Inner face looking West (Wall is East)
+                                panel.position.set(px - 1.05, 1.5, pz + (Math.random()*4-2));
+                                panel.rotation.y = -Math.PI/2;
+                            }
+                            scene.add(panel);
+                        }
+                    }
+                };
+
+                const checkSide = (side) => {
+                    if (openings.includes(side)) return 'door';
+                    if (windows.includes(side)) return 'window';
+                    return 'solid';
+                }
+
+                // Walls
+                // North Wall (Z negative) -> Inside face looks South ('S')
+                makeWall(cx, cz - halfD - 1, w + 4, 2, checkSide('N'), 'S');
+                
+                // South Wall (Z positive) -> Inside face looks North ('N')
+                makeWall(cx, cz + halfD + 1, w + 4, 2, checkSide('S'), 'N');
+                
+                // East Wall (X positive) -> Inside face looks West ('W')
+                makeWall(cx + halfW + 1, cz, 2, d, checkSide('E'), 'W');
+                
+                // West Wall (X negative) -> Inside face looks East ('E')
+                makeWall(cx - halfW - 1, cz, 2, d, checkSide('W'), 'E');
+
+                // Strip Lighting
+                const lightGeo = new THREE.BoxGeometry(0.5, 0.1, 2);
+                const light = new THREE.Mesh(lightGeo, matLight);
+                light.position.set(cx, h-0.1, cz);
+                scene.add(light);
+                
+                const pl = new THREE.PointLight(0xffffff, 0.4, 100); 
+                pl.position.set(cx, h-1, cz);
+                scene.add(pl);
+            };
+
+            // --- LAYOUT ---
+            
+            // 1. Spawn (Added Window South)
+            addRoom(0, 0, 8, 12, 4, ['N'], ['S'], matWallDark, matFloor);
+            
+            // 2. Connector with Window view
+            addRoom(0, -14, 6, 16, 3.5, ['N', 'S'], ['E', 'W'], matWallImp);
+
+            // 3. Junction (Added Window East)
+            addRoom(0, -30, 10, 10, 4, ['S', 'E', 'W', 'N'], [], matWallImp);
+            
+            // 4. Hangar Bay Access (West) - Large Window
+            addRoom(-20, -30, 24, 16, 5, ['E'], ['W'], matWallDark);
+            // Crates
+            addBlock(-20, 1.5, -30, 2, 3, 2, new THREE.MeshStandardMaterial({color:0x222}));
+            addBlock(-25, 1.5, -32, 2, 3, 2, new THREE.MeshStandardMaterial({color:0x222}));
+
+            // 5. Reactor Control (East)
+            addRoom(20, -30, 24, 16, 5, ['W'], ['E'], matWallImp);
+            // Reactor Core
+            addBlock(20, 2, -30, 4, 4, 4, new THREE.MeshStandardMaterial({color:0x333}));
+            const rl = new THREE.PointLight(0xff0000, 1, 20); // Higher range
+            rl.position.set(20, 2, -30);
+            scene.add(rl);
+
+            // 6. Command Bridge (North)
+            addRoom(0, -42, 6, 12, 4, ['S', 'N'], [], matWallImp);
+            addRoom(0, -65, 30, 30, 8, ['S'], ['N', 'E', 'W'], matWallImp); // All sides windows
+            
+            // Bridge Walkway
+            addBlock(0, 0.5, -65, 8, 1, 20, new THREE.MeshStandardMaterial({color:0x111, roughness:0.1}));
+        }
+
+        // --- 5. WEAPON (E-11 BLASTER) ---
+        function createWeapon() {
+            const group = new THREE.Group();
+            
+            const matBlack = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.3, metalness: 0.8 });
+            const matScope = new THREE.MeshStandardMaterial({ color: 0x222222 });
+
+            // Main Barrel (Cylinder)
+            const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.6, 16), matBlack);
+            barrel.rotation.x = Math.PI / 2;
+            
+            // Grip
+            const grip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.15, 0.1), matBlack);
+            grip.position.set(0, -0.1, 0.15);
+            grip.rotation.x = 0.2;
+
+            // Magazine (Side)
+            const mag = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.04, 0.1), matBlack);
+            mag.position.set(-0.05, 0.02, 0.1);
+
+            // Scope (Top)
+            const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.3), matScope);
+            scope.rotation.x = Math.PI / 2;
+            scope.position.set(0, 0.08, 0.05);
+
+            // Cooling Fins (Ribs on barrel)
+            for(let i=0; i<6; i++) {
+                const rib = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, 0.02), matBlack);
+                rib.rotation.x = Math.PI/2;
+                rib.position.set(0, 0, -0.2 + (i * 0.06));
+                group.add(rib);
+            }
+
+            group.add(barrel, grip, mag, scope);
+
+            // --- GUN VISIBILITY LIGHT ---
+            // A dedicated light that stays with the gun to keep it illuminated
+            const gunLight = new THREE.PointLight(0xffffff, 0.5, 3);
+            gunLight.position.set(0, 0.5, 0.5);
+            group.add(gunLight);
+
+            // Attach
+            group.position.set(0.25, -0.25, -0.4);
+            camera.add(group);
+            weapon.obj = group;
+
+            updateAmmo();
+        }
+
+        function updateAmmo() {
+            document.getElementById('ammo-display').innerHTML = weapon.ammo + '<span id="ammo-reserve">/∞</span>';
+        }
+
+        function fire() {
+            if (weapon.reloading || weapon.ammo <= 0) return;
+            
+            const now = performance.now();
+            if (now - weapon.lastShot < 150) return;
+            weapon.lastShot = now;
+
+            weapon.ammo--;
+            weapon.recoil = 0.1;
+            updateAmmo();
+            playSound('blaster');
+
+            const laserGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.6);
+            laserGeo.rotateX(Math.PI / 2);
+            const laserMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const laser = new THREE.Mesh(laserGeo, laserMat);
+            
+            const vector = new THREE.Vector3(0, 0, -0.6);
+            vector.applyMatrix4(weapon.obj.matrixWorld);
+            laser.position.copy(vector);
+            laser.quaternion.copy(camera.quaternion);
+            
+            scene.add(laser);
+            
+            const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+            lasers.push({ mesh: laser, dir: direction, life: 2.0 });
+
+            weapon.obj.position.z += 0.05;
+        }
+
+        function reload() {
+            if (weapon.reloading || weapon.ammo === weapon.maxAmmo) return;
+            weapon.reloading = true;
+            document.getElementById('weapon-name').innerText = "RECHARGING...";
+            
+            setTimeout(() => {
+                weapon.ammo = weapon.maxAmmo;
+                weapon.reloading = false;
+                document.getElementById('weapon-name').innerText = "E-11 BLASTER";
+                updateAmmo();
+            }, 1500);
+        }
+
+        function playSound(id) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            const t = audioCtx.currentTime;
+
+            if (id === 'blaster') {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(1500, t);
+                osc.frequency.exponentialRampToValueAtTime(100, t + 0.15);
+                gain.gain.setValueAtTime(0.2, t);
+                gain.gain.exponentialRampToValueAtTime(0.01, t + 0.15);
+                osc.start(t); osc.stop(t + 0.15);
+            } 
+        }
+
+        function setupInputs() {
+            document.addEventListener('click', () => {
+                if (!controlsLocked) {
+                    try {
+                        const promise = document.body.requestPointerLock();
+                        if (promise) {
+                            promise.catch(e => console.log("Pointer lock cancelled"));
+                        }
+                    } catch (e) {
+                        console.log("Pointer lock error", e);
+                    }
+                }
+                else fire();
+            });
+            
+            document.addEventListener('pointerlockchange', () => {
+                controlsLocked = !!document.pointerLockElement;
+                document.getElementById('overlay').style.display = controlsLocked ? 'none' : 'flex';
+                document.getElementById('game-ui').style.display = controlsLocked ? 'block' : 'none';
+            });
+
+            document.addEventListener('mousemove', e => {
+                if (!controlsLocked) return;
+                camera.rotation.y -= e.movementX * MOUSE_SENSITIVITY;
+                camera.rotation.x -= e.movementY * MOUSE_SENSITIVITY;
+                camera.rotation.x = Math.max(-1.5, Math.min(1.5, camera.rotation.x));
+            });
+
+            document.addEventListener('keydown', e => {
+                if (e.code === 'KeyW') moveState.fwd = true;
+                if (e.code === 'KeyS') moveState.bwd = true;
+                if (e.code === 'KeyA') moveState.left = true;
+                if (e.code === 'KeyD') moveState.right = true;
+                if (e.code === 'KeyR') reload();
+            });
+            document.addEventListener('keyup', e => {
+                if (e.code === 'KeyW') moveState.fwd = false;
+                if (e.code === 'KeyS') moveState.bwd = false;
+                if (e.code === 'KeyA') moveState.left = false;
+                if (e.code === 'KeyD') moveState.right = false;
+            });
+        }
+
+        function checkCollision(pos) {
+            const playerBox = new THREE.Box3(
+                new THREE.Vector3(pos.x - PLAYER_RADIUS, pos.y - 1, pos.z - PLAYER_RADIUS),
+                new THREE.Vector3(pos.x + PLAYER_RADIUS, pos.y + 1, pos.z + PLAYER_RADIUS)
+            );
+            for (const box of worldColliders) {
+                if (box.intersectsBox(playerBox)) return true;
+            }
+            return false;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now();
+            const delta = Math.min((time - prevTime) / 1000, 0.1);
+            prevTime = time;
+
+            if (!controlsLocked) return;
+
+            for (let i = lasers.length - 1; i >= 0; i--) {
+                const l = lasers[i];
+                l.life -= delta;
+                
+                const moveDist = 50 * delta;
+                const p1 = l.mesh.position.clone();
+                l.mesh.position.add(l.dir.clone().multiplyScalar(moveDist));
+                
+                const tip = l.mesh.position;
+                let hit = false;
+                for(const box of worldColliders) {
+                    if(box.containsPoint(tip)) {
+                        hit = true; break;
+                    }
+                }
+
+                if (hit || l.life <= 0) {
+                    scene.remove(l.mesh);
+                    lasers.splice(i, 1);
+                    if(hit) {
+                        const spark = new THREE.Mesh(new THREE.BoxGeometry(0.2,0.2,0.2), new THREE.MeshBasicMaterial({color:0xffaa00}));
+                        spark.position.copy(tip);
+                        scene.add(spark);
+                        setTimeout(()=>scene.remove(spark), 100);
+                    }
+                }
+            }
+
+            const speed = PLAYER_SPEED * delta;
+            const angleY = camera.rotation.y;
+            const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0,1,0), angleY);
+            const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0,1,0), angleY);
+
+            const moveVec = new THREE.Vector3();
+            if (moveState.fwd) moveVec.add(forward);
+            if (moveState.bwd) moveVec.sub(forward);
+            if (moveState.right) moveVec.add(right);
+            if (moveState.left) moveVec.sub(right);
+
+            if (moveVec.lengthSq() > 0) {
+                moveVec.normalize().multiplyScalar(speed);
+                
+                const currentPos = camera.position.clone();
+                if (!checkCollision(currentPos.clone().add(new THREE.Vector3(moveVec.x, 0, 0)))) camera.position.x += moveVec.x;
+                if (!checkCollision(new THREE.Vector3(camera.position.x, currentPos.y, currentPos.z + moveVec.z))) camera.position.z += moveVec.z;
+
+                camera.position.y = PLAYER_HEIGHT + Math.sin(time * 0.012) * 0.03;
+                weapon.obj.position.x = THREE.MathUtils.lerp(weapon.obj.position.x, 0.25 + Math.cos(time*0.01)*0.005, 0.2);
+                weapon.obj.position.y = THREE.MathUtils.lerp(weapon.obj.position.y, -0.25 + Math.sin(time*0.02)*0.005, 0.2);
+            } else {
+                camera.position.y = THREE.MathUtils.lerp(camera.position.y, PLAYER_HEIGHT, 0.1);
+                weapon.obj.position.x = THREE.MathUtils.lerp(weapon.obj.position.x, 0.25, 0.1);
+                weapon.obj.position.y = THREE.MathUtils.lerp(weapon.obj.position.y, -0.25 + Math.sin(time*0.003)*0.002, 0.1);
+            }
+
+            if (weapon.obj.position.z < -0.4) weapon.obj.position.z += delta * 2;
+            else weapon.obj.position.z = -0.4;
+            
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
