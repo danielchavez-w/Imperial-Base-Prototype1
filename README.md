@@ -2,9 +2,10 @@
 
 > **"Check out this early version of the Imperial Base set somewhere inside the unfinished Death Star! (I know, haha)."**
 
-### ⚠️ Prototype Status
-This is a **Legacy Build (v1)**. It is a "Vertical Slice" focusing on level architecture, lighting, and basic weapon handling.
-*(Active development is currently moving to a new React/Three.js engine).*
+### 🎯 Concept
+A Star Wars FPS prototype inspired by the classic mechanics of **GoldenEye 007**.
+* **Genre:** First-Person Shooter / Walking Sim
+* **Status:** Legacy Build (v1) - Focusing on level architecture and weapon handling.
 
 ### 🕹️ Controls
 | Action | Key |
