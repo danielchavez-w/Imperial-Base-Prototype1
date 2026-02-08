@@ -14,7 +14,6 @@ A Star Wars FPS prototype inspired by the classic mechanics of **GoldenEye 007**
 | **Look** | `Mouse` |
 | **Fire Blaster** | `Left Click` |
 | **Reload** | `R` |
-| **Jump** | `Spacebar` |
 
 ### 🏗️ Features
 * **Explore:** Navigate the cold, brutalist corridors of the Empire.
