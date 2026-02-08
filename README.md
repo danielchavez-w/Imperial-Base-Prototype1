@@ -4,6 +4,7 @@
 
 ### 🎯 Concept
 A Star Wars FPS prototype inspired by the classic mechanics of **GoldenEye 007**.
+(WEB ONLY: PC & MAC)
 * **Genre:** First-Person Shooter / Walking Sim
 * **Status:** Legacy Build (v1) - Focusing on level architecture and weapon handling.
 
